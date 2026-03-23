@@ -11,7 +11,8 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
 # IMPORTANT: pgvector columns are created with a fixed dimension.
 # Keep this aligned with the embedding model output dimension.
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "384"))
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "alpha5cloud")
+# Set via environment; use empty string if your embedding server does not require auth.
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_BASE = os.getenv("OPENAI_BASE", "http://embeddings.alpha5.finance:8001/v1")
 MODEL = os.getenv("MODEL", "gemma2:27b")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://ollama.alpha5.finance:11434")
@@ -22,5 +23,5 @@ API_URL = os.getenv("API_URL", "http://whisper-api.alpha5.finance:5005/transcrib
 # PostgreSQL
 POSTGRES_CONNECTION_URI = os.getenv(
     "POSTGRES_CONNECTION_URI",
-    "postgresql://markets:p0w3rb4r@postgres.alpha5.finance:5432/markets_prod"
+    "postgresql://postgres@127.0.0.1:5432/youtube_rag",
 )

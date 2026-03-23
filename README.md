@@ -51,7 +51,7 @@ All configuration is managed through environment variables (with defaults in `co
 | `COLLECTION_NAME` | `youtube_finance_docs` | PostgreSQL table name for embeddings |
 | `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Embedding model name |
 | `EMBEDDING_DIM` | `384` | Embedding vector dimension (must match model output) |
-| `OPENAI_API_KEY` | `alpha5cloud` | API key for embedding service |
+| `OPENAI_API_KEY` | _(empty)_ | API key for embedding service; set in your environment |
 | `OPENAI_BASE` | `http://embeddings.alpha5.finance:8001/v1` | Base URL for embedding API |
 | `MODEL` | `gemma2:27b` | Ollama LLM model name |
 | `OLLAMA_HOST` | `http://ollama.alpha5.finance:11434` | Ollama server URL |
@@ -60,12 +60,14 @@ All configuration is managed through environment variables (with defaults in `co
 | `API_URL` | `http://whisper-api.alpha5.finance:5005/transcribe` | Whisper transcription API URL |
 | `PORT` | `5004` | Flask application port |
 | `DEBUG` | `false` | Enable Flask debug mode |
+| `POSTGRES_CONNECTION_URI` | `postgresql://postgres@127.0.0.1:5432/youtube_rag` | Full Postgres URL (set user/password via env for non-local) |
 
 ### Database Configuration
 
-PostgreSQL connection string (hardcoded in `config.py`):
+PostgreSQL connection string: set `POSTGRES_CONNECTION_URI`. The default in `config.py` points at local Postgres without a password in the URI; supply credentials via the variable for remote hosts, for example:
+
 ```
-postgresql://markets:p0w3rb4r@postgres.alpha5.finance:5432/knowledgebase
+postgresql://USER:PASSWORD@host:5432/database_name
 ```
 
 ## Components
@@ -223,7 +225,7 @@ Or manually:
 ```bash
 docker run --rm -it --name youtube-qa-agent \
   -p 5014:5004 \
-  -e OPENAI_API_KEY=alpha5cloud \
+  -e OPENAI_API_KEY="$OPENAI_API_KEY" \
   -e OPENAI_BASE=http://embeddings.alpha5.finance:8001/v1 \
   -e API_URL=http://whisper-api.alpha5.finance:5005/transcribe \
   -e EMBEDDING_MODEL=all-MiniLM-L6-v2 \
