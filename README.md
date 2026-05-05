@@ -21,8 +21,6 @@ youtube-rag/
 ├── config.py           # Central defaults + env-based settings
 ├── requirements.txt
 ├── Dockerfile
-├── build.sh            # Build/push image (see script for registry/tag)
-├── test.sh             # Example docker run (adjust env and volumes)
 ├── templates/
 │   └── index.html      # UI: transcribe, ingest, chat + SSE progress
 └── LICENSE             # Apache-2.0
