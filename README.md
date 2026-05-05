@@ -1,147 +1,160 @@
-# YouTube RAG (Retrieval-Augmented Generation)
+# YouTube RAG
 
-Flask app that downloads YouTube audio, transcribes it via a Whisper-compatible HTTP API, chunks and embeds transcripts into PostgreSQL (pgvector), and answers questions with an Ollama-backed RAG flow. The default UI is a single-page experience: add a video, optionally ingest, then chat against embedded transcripts.
+Flask application that **downloads YouTube audio**, **transcribes** it via a Whisper-compatible HTTP API, **indexes transcripts** into a **remote [LightRAG](https://github.com/HKUDS/LightRAG)** service, and **answers questions** through that same LightRAG HTTP API. The bundled UI covers download, optional ingest, and chat with **Server-Sent Events** progress.
 
-## What it does
+PostgreSQL is used only for the **`youtube_videos`** registry (duplicate detection and paths), not for vector RAG storage.
 
-1. Download audio with **yt-dlp** and extract **MP3** (192 kbps).
-2. Send the MP3 to your **transcription API**; store **`.txt`** next to your configured text folder.
-3. **Ingest** (`inges.py`): load all `.txt` files under the text directory (`**/*.txt`), chunk with LangChain, embed via an OpenAI-compatible API, upsert into pgvector (skips rows whose chunk `content` already exists).
-4. **Query** (`query.py`): embed the user question, retrieve similar chunks (cosine distance below **0.7**), stream a completion from **Ollama**.
+## Flow
 
-Only **`app.py`** needs to run as the server; `query.py` is imported as a library. Ingestion is normally triggered over HTTP (`/run-ingest` or bundled with `/download-transcribe`) which runs `inges.py` in a subprocess.
+1. **Download** — `yt-dlp` extracts **MP3** (192 kbps), throttled (semaphore, random delay).
+2. **Transcribe** — `POST` audio to **`API_URL`** (multipart field `file`); response JSON must include **`text`**.
+3. **Register** — Row in **`youtube_videos`** keyed by stable **`video_id`** (re-submitting the same video returns HTTP 400).
+4. **Ingest** — `inges.py` loads `**/*.txt` under **`TEXT_FOLDER`**, batches them to LightRAG **`POST /documents/texts`** with stable **`file_sources`** like `youtube-{video_id}.txt` for deduplication on the server.
+5. **Query** — **`POST /query`** on the LightRAG base URL with configurable **`LIGHTRAG_QUERY_MODE`** (`naive`, `local`, `global`, `hybrid`, `mix`, `bypass`).
+
+Run **`python app.py`** as the main process; **`inges.py`** is invoked as a subprocess for ingest.
 
 ## Project layout
 
 ```
 youtube-rag/
-├── app.py              # Flask app, download/transcribe, ingest trigger, query API
-├── inges.py            # Embedding pipeline (run standalone or via app)
-├── query.py            # Semantic search + Ollama RAG (imported by app)
-├── config.py           # Central defaults + env-based settings
+├── app.py                 # Flask routes, yt-dlp, transcribe, SSE, Postgres video registry
+├── inges.py               # Batch send transcripts → remote LightRAG /documents/texts
+├── query.py               # Calls remote LightRAG /query (imported by app)
+├── lightrag_remote.py     # HTTP client (requests) for LightRAG API
+├── config.py              # Environment-driven settings
+├── docker-compose.yml     # Postgres + LightRAG server + youtube-rag
+├── Dockerfile             # Flask app image
+├── Dockerfile.lightrag    # LightRAG API (lightrag-hku) image
+├── .env.example           # All variables (copy to .env)
 ├── requirements.txt
-├── Dockerfile
-├── templates/
-│   └── index.html      # UI: transcribe, ingest, chat + SSE progress
-└── LICENSE             # Apache-2.0
+├── templates/index.html   # SPA-style UI + EventSource progress
+├── docs/mp3, docs/txt     # Runtime audio / transcripts (created or bind-mounted)
+└── LICENSE                # Apache-2.0
 ```
-
-At runtime, ensure **`DOWNLOAD_FOLDER`** and **`TEXT_FOLDER`** exist (the app creates them on startup). Docker copies a `docs/` tree into the image; bind-mount a host `docs` for persistence if you use containers.
 
 ## Configuration
 
-Environment variables override `config.py` defaults.
+Copy **`.env.example`** to **`.env`** and set secrets. Docker Compose reads **`.env`** for variable substitution.
+
+### Flask app (`config.py`)
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `COLLECTION_NAME` | `youtube_finance_docs` | Postgres table name for embedding rows |
-| `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Embedding model id for the OpenAI-compatible API |
-| `EMBEDDING_DIM` | `384` | Vector size; must match the model output and the pgvector column |
-| `OPENAI_API_KEY` | _(empty)_ | API key for the embedding server, if required |
-| `OPENAI_BASE` | `http://embeddings.alpha5.finance:8001/v1` | Base URL for embeddings (typically includes `/v1`) |
-| `MODEL` | `gemma2:27b` | Ollama model name for chat |
-| `OLLAMA_HOST` | `http://ollama.alpha5.finance:11434` | Ollama HTTP API host |
-| `DOWNLOAD_FOLDER` | `/app/docs/mp3` | MP3 output directory |
-| `TEXT_FOLDER` | `/app/docs/txt` | Transcript `.txt` directory |
-| `API_URL` | `http://whisper-api.alpha5.finance:5005/transcribe` | Whisper HTTP endpoint (`POST` multipart field `file`) |
-| `POSTGRES_CONNECTION_URI` | `postgresql://postgres@127.0.0.1:5432/youtube_rag` | Postgres connection string |
-| `PORT` | `5004` | Flask listen port |
 | `DEBUG` | `false` | Flask debug |
-| `LOG_LEVEL` | `DEBUG` if `DEBUG=true`, else `INFO` | Logging level |
+| `LOG_LEVEL` | `INFO` (or `DEBUG` if `DEBUG=true`) | Logging |
+| `PORT` | `5004` | Flask listen port |
 | `CORS_ORIGINS` | `*` | Comma-separated origins for `flask-cors` |
+| `DOWNLOAD_FOLDER` | `/app/docs/mp3` | MP3 output |
+| `TEXT_FOLDER` | `/app/docs/txt` | Transcript `.txt` files |
+| `API_URL` | Alpha5 Whisper URL | Transcription endpoint |
+| `OPENAI_API_KEY` | _(empty)_ | Key for OpenAI-compatible clients used by the app |
+| `OPENAI_BASE` | Alpha5 embeddings `/v1` | OpenAI-compatible base URL (include `/v1` if required) |
+| `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Metadata / tooling |
+| `EMBEDDING_DIM` | `384` | Same |
+| `MODEL` | `gemma2:27b` | Default Ollama model name in config (unused by remote LightRAG path) |
+| `OLLAMA_HOST` | Alpha5 Ollama URL | Default Ollama host in config (unused by remote LightRAG path) |
+| `COLLECTION_NAME` | `youtube_finance_docs` | Legacy / docs naming |
+| `POSTGRES_CONNECTION_URI` | local `youtube_rag` | SQLAlchemy URI for **`youtube_videos`** |
 
-**Postgres:** use a URI with credentials for non-local hosts, for example `postgresql://USER:PASSWORD@host:5432/youtube_rag`. The app and scripts expect the **pgvector** extension; `inges.py` / `query.py` run `CREATE EXTENSION IF NOT EXISTS vector` and ensure an `embedding vector(EMBEDDING_DIM)` column.
+### Remote LightRAG client (`lightrag_remote.py`)
 
-**Embedding dimension:** `EMBEDDING_DIM` must match the embedding model. If you change the model, update `EMBEDDING_DIM` and use a **new** `COLLECTION_NAME` or migrate the column type—`query.py` validates stored column dimension vs config.
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `LIGHTRAG_SERVICE_URL` | `http://127.0.0.1:9621` | LightRAG API base (no trailing slash) |
+| `LIGHTRAG_API_KEY` | _(empty)_ | `X-API-Key` when the server requires it |
+| `LIGHTRAG_BEARER_TOKEN` | _(empty)_ | `Authorization: Bearer …` when using JWT-style auth |
+| `LIGHTRAG_REQUEST_TIMEOUT` | `300` | HTTP timeout (seconds) |
+| `LIGHTRAG_QUERY_MODE` | `hybrid` | Passed as `mode` on **`POST /query`** |
+| `LIGHTRAG_USER_PROMPT` | _(empty)_ | If set, sent as `user_prompt` on **`POST /query`** |
+
+### Docker Compose (see `.env.example`)
+
+- **Postgres**: `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`.
+- **LightRAG container**: `OPENAI_COMPAT_BASE`, optional `OPENAI_LLM_BASE` / `OPENAI_EMBEDDING_BASE` / `OPENAI_EMBEDDING_API_KEY`, `LLM_MODEL`, `LIGHTRAG_LLM_MODEL`, `LIGHTRAG_EMBEDDING_MODEL`, `LIGHTRAG_EMBEDDING_DIM`, shared `OPENAI_API_KEY`, optional `LIGHTRAG_API_KEY` for the LightRAG server’s API key.
+
+The **LightRAG** service is built with **`LLM_BINDING=openai`** and **`EMBEDDING_BINDING=openai`** (OpenAI-compatible HTTPS). Point hosts at OpenAI, vLLM, LiteLLM, or your own gateway; each base URL should include **`/v1`** when your provider expects it.
 
 ## HTTP API
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/` | Web UI (`templates/index.html`): transcribe, ingest, chat |
-| `POST` | `/` | Legacy form POST: same download+transcribe flow as JSON route, then redirect to `/success` |
-| `GET` | `/success` | Plain-text success after legacy form flow |
-| `GET` | `/health` | JSON `{"status":"healthy","service":"youtube-rag"}` |
-| `POST` | `/download-transcribe` | JSON body: `youtube_url`, optional `ingest` (bool), optional `task_id`. Returns paths, metadata, optional ingest subprocess result, and `task_id`. |
-| `GET` | `/progress/<task_id>` | **Server-Sent Events** stream of `{stage, percent, message, ...}` for long operations |
-| `POST` | `/run-ingest` | Optional JSON `{"task_id": "..."}`; runs `python inges.py`, returns stdout/stderr/returncode |
-| `POST` | `/query` | JSON `query`, optional `user_id`, optional `task_id`. Returns `response` and `task_id`. If no chunks pass the similarity threshold, returns a helpful message instead of an LLM answer. |
+| `GET` | `/` | Web UI (`templates/index.html`) |
+| `POST` | `/` | Legacy form: download + transcribe, redirect to `/success` |
+| `GET` | `/success` | Plain text after legacy form |
+| `GET` | `/health` | `{"status":"healthy","service":"youtube-rag"}` |
+| `POST` | `/download-transcribe` | JSON: `youtube_url`, optional `ingest`, optional `task_id` |
+| `GET` | `/progress/<task_id>` | SSE progress JSON |
+| `POST` | `/run-ingest` | Optional JSON `task_id`; runs `python inges.py` |
+| `POST` | `/query` | JSON: `query`, optional `user_id`, optional `task_id` → LightRAG answer |
 
-**Duplicate videos:** before download, the app resolves a stable `video_id` with yt-dlp and checks the **`youtube_videos`** table. Re-submitting the same video returns HTTP 400 with a duplicate error unless you clear that row.
-
-## Main code paths
-
-- **`app.py`**: CORS, directories, `youtube_videos` ORM, progress store for SSE, `_download_transcribe_flow` (metadata → download → transcribe → register row), JSON and form routes, subprocess ingest.
-- **`inges.py`**: `DirectoryLoader` for `/app/docs/txt/**/*.txt`, `RecursiveCharacterTextSplitter` (2000 chars, 20 overlap), `OpenAI` client embeddings, `TextEmbedding` table named `COLLECTION_NAME`, duplicate skip by exact chunk string match.
-- **`query.py`**: Query embedding via same API/model as ingest, pgvector `<=>` with threshold **0.7**, top-**k** (default 5), Ollama streaming chat with a fixed “hedge fund manager” system prompt. `save_chat_history` is currently a no-op (logging only).
-
-## Dependencies
-
-See `requirements.txt` for pinned and unpinned packages. Notable: **Flask**, **flask-cors**, **yt-dlp**, **moviepy**, **langchain**-community/text-splitters/openai, **openai**, **sqlalchemy**, **pgvector**, **psycopg2-binary**, **requests**, **fake-useragent**. Chat uses the **`ollama`** Python client (`from ollama import Client`); ensure it is installed (directly or as a transitive dependency of your environment).
-
-## Local run
+## Local development
 
 ```bash
+cp .env.example .env
+# Edit .env: POSTGRES_CONNECTION_URI, LIGHTRAG_SERVICE_URL, OPENAI_*, API_URL, etc.
+
 pip install -r requirements.txt
 mkdir -p docs/mp3 docs/txt
-export POSTGRES_CONNECTION_URI="postgresql://..."
-export OPENAI_BASE="http://your-embeddings:8001/v1"
-export API_URL="http://your-whisper:5005/transcribe"
-export OLLAMA_HOST="http://localhost:11434"
 python app.py
 ```
 
-Open `http://localhost:5004` (or your `PORT`).
+Open `http://localhost:5004` (or your `PORT`). You need a reachable **Postgres**, **LightRAG API**, **Whisper** service, and any **OpenAI-compatible** endpoints referenced in `.env`.
 
-## Docker
-
-`build.sh` and `test.sh` in this repo target **`registry.alpha5.finance/trade-system/youtube-rag:latest`**—adjust registry/tag for your environment.
-
-Build (or run the commands inside `build.sh`):
+## Docker Compose
 
 ```bash
-docker build -t registry.alpha5.finance/trade-system/youtube-rag:latest .
+cp .env.example .env
+# Set at minimum: OPENAI_API_KEY, OPENAI_COMPAT_BASE
+
+docker compose up -d --build
 ```
 
-Example run (from `test.sh`; add `-e POSTGRES_CONNECTION_URI=...` pointing at a reachable Postgres with pgvector):
+Services:
+
+- **`postgres`** — database for `youtube_videos`.
+- **`lightrag`** — `lightrag-server` on port **9621**, OpenAI-compatible LLM + embeddings (see compose env).
+- **`youtube-rag`** — Flask on **5004**, `LIGHTRAG_SERVICE_URL=http://lightrag:9621`, Whisper/embeddings default to **`host.docker.internal`** (see `extra_hosts`).
+
+Ensure **`OPENAI_COMPAT_BASE`**, **`OPENAI_API_KEY`**, and the **`LLM_MODEL`** / **`LIGHTRAG_EMBEDDING_*`** values match your OpenAI-compatible providers (models and dimensions must line up).
+
+## Single-container image (`Dockerfile`)
+
+Build and run the **Flask app only**; supply Postgres, LightRAG, Whisper, and embedding URLs via `-e` or `.env`. Example:
 
 ```bash
-docker run --rm -it --name youtube-rag \
-  -p 5014:5004 \
-  -e OPENAI_API_KEY="${OPENAI_API_KEY}" \
-  -e OPENAI_BASE=http://embeddings.alpha5.finance:8001/v1 \
-  -e API_URL=http://whisper-api.alpha5.finance:5005/transcribe \
-  -e EMBEDDING_MODEL=BAAI/bge-small-en-v1.5 \
-  -e EMBEDDING_DIM=384 \
-  -e COLLECTION_NAME=youtube_docs \
-  -e MODEL=deepseek-r1:1.5b \
-  -e OLLAMA_HOST=http://ollama.alpha5.finance:11434 \
-  -e TZ=America/New_York \
-  -v /data/ai-docs/youtube-rag/docs:/app/docs \
-  registry.alpha5.finance/trade-system/youtube-rag:latest
+docker build -t youtube-rag:local .
+docker run --rm -p 5004:5004 \
+  -e POSTGRES_CONNECTION_URI="postgresql://..." \
+  -e LIGHTRAG_SERVICE_URL="http://lightrag.example:9621" \
+  -e OPENAI_API_KEY="..." \
+  -e OPENAI_BASE="http://host:8001/v1" \
+  -e API_URL="http://host:5005/transcribe" \
+  -v "$(pwd)/docs:/app/docs" \
+  youtube-rag:local
 ```
 
-The image **`CMD`** is `python app.py` on port **5004** inside the container.
+`build.sh` / `test.sh` may reference a private registry; adjust tags to match your deployment.
 
-## Example `curl` calls
+## Example `curl`
 
-**Download + transcribe (JSON):**
+**Download + transcribe (JSON)**
 
 ```bash
 curl -sS -X POST http://localhost:5004/download-transcribe \
   -H "Content-Type: application/json" \
-  -d '{"youtube_url":"https://www.youtube.com/watch?v=VIDEO_ID","ingest":false,"task_id":"my-task-1"}'
+  -d '{"youtube_url":"https://www.youtube.com/watch?v=VIDEO_ID","ingest":false,"task_id":"task-1"}'
 ```
 
-**Ingest all transcripts:**
+**Ingest all `.txt` under `TEXT_FOLDER`**
 
 ```bash
 curl -sS -X POST http://localhost:5004/run-ingest \
   -H "Content-Type: application/json" \
-  -d '{}'
+  -d '{"task_id":"ingest-1"}'
 ```
 
-**Query:**
+**Query (via remote LightRAG)**
 
 ```bash
 curl -sS -X POST http://localhost:5004/query \
@@ -151,11 +164,15 @@ curl -sS -X POST http://localhost:5004/query \
 
 ## Operational notes
 
-- **Concurrency:** at most **3** simultaneous yt-dlp downloads (semaphore), plus a random **1–3 s** delay per download.
-- **FFmpeg:** required on the host or in the image for audio extraction (Dockerfile installs `ffmpeg`).
-- **Similarity:** chunks with cosine distance **≥ 0.7** are excluded from RAG context.
-- **Logging:** set `LOG_LEVEL` (e.g. `DEBUG`) for verbose logs.
+- At most **3** concurrent downloads; **1–3 s** random delay per download.
+- **FFmpeg** required (installed in `Dockerfile`).
+- **`save_chat_history`** is a stub (logging only); chat persistence in the UI is **localStorage**.
+- LightRAG’s **`/query`** API requires query length **≥ 3** characters; the client pads very short strings minimally.
+
+## Dependencies
+
+See **`requirements.txt`**: Flask, flask-cors, yt-dlp, moviepy, langchain-community (loaders), sqlalchemy, psycopg2-binary, requests, openai, etc. The **LightRAG server** image installs **`lightrag-hku`** separately (`Dockerfile.lightrag`).
 
 ## License
 
-This project is licensed under the **Apache License 2.0**; see [LICENSE](LICENSE).
+Licensed under the **Apache License 2.0**; see [LICENSE](LICENSE).
