@@ -1,0 +1,99 @@
+# Stack: Postgres (app metadata) + LightRAG API + youtube-rag Flask UI
+#
+# LightRAG uses OpenAI-compatible HTTP APIs for BOTH chat (LLM) and embeddings.
+# Point them at OpenAI, vLLM, LiteLLM, Text Embeddings Inference, Alpha5 endpoints, etc.
+#
+# Required (set in your shell or a `.env` file next to this compose file):
+#   OPENAI_API_KEY           — API key sent to the compatible endpoints below
+#   OPENAI_COMPAT_BASE       — Base URL including /v1 (e.g. https://api.openai.com/v1
+#                             or http://embeddings.alpha5.finance:8001/v1)
+#
+# Optional overrides:
+#   OPENAI_LLM_BASE          — If set, LLM uses this /v1 URL instead of OPENAI_COMPAT_BASE
+#   OPENAI_EMBEDDING_BASE    — If unset, embedding host defaults to OPENAI_COMPAT_BASE
+#   OPENAI_EMBEDDING_API_KEY — If unset, defaults to OPENAI_API_KEY
+#   LLM_MODEL, EMBEDDING_MODEL, EMBEDDING_DIM
+#   LIGHTRAG_API_KEY         — If set on the LightRAG server, set the same on youtube-rag
+#
+# youtube-rag download+transcribe still uses OPENAI_BASE + API_URL (Whisper), defaulting to
+# host.docker.internal — run those on the host or override.
+#
+# Usage:
+#   export OPENAI_API_KEY=... OPENAI_COMPAT_BASE=https://api.openai.com/v1
+#   docker compose up -d --build
+#   open http://localhost:5004
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: youtube_rag
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d youtube_rag"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  lightrag:
+    build:
+      context: .
+      dockerfile: Dockerfile.lightrag
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "9621"
+      WORKING_DIR: /app/rag_storage
+      INPUT_DIR: /app/inputs
+      # --- OpenAI-compatible LLM + embeddings (remote) ---
+      LLM_BINDING: openai
+      LLM_BINDING_HOST: ${OPENAI_LLM_BASE:-${OPENAI_COMPAT_BASE:?set OPENAI_COMPAT_BASE or OPENAI_LLM_BASE to your /v1 endpoint}}
+      LLM_BINDING_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+      EMBEDDING_BINDING: openai
+      EMBEDDING_BINDING_HOST: ${OPENAI_EMBEDDING_BASE:-${OPENAI_COMPAT_BASE}}
+      EMBEDDING_BINDING_API_KEY: ${OPENAI_EMBEDDING_API_KEY:-${OPENAI_API_KEY}}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-1536}
+      LIGHTRAG_API_KEY: ${LIGHTRAG_API_KEY:-}
+    volumes:
+      - lightrag_data:/app/rag_storage
+    ports:
+      - "9621:9621"
+
+  youtube-rag:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      PORT: "5004"
+      POSTGRES_CONNECTION_URI: postgresql://postgres:postgres@postgres:5432/youtube_rag
+      LIGHTRAG_SERVICE_URL: http://lightrag:9621
+      LIGHTRAG_API_KEY: ${LIGHTRAG_API_KEY:-}
+      LIGHTRAG_QUERY_MODE: ${LIGHTRAG_QUERY_MODE:-hybrid}
+      # Flask app: OpenAI-compatible embeddings for ingest path not used by remote LightRAG;
+      # Whisper + any local tools still use these:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE: ${OPENAI_BASE:-http://host.docker.internal:8001/v1}
+      API_URL: ${API_URL:-http://host.docker.internal:5005/transcribe}
+      DOWNLOAD_FOLDER: /app/docs/mp3
+      TEXT_FOLDER: /app/docs/txt
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./docs:/app/docs
+    ports:
+      - "5004:5004"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      lightrag:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  lightrag_data:

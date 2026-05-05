@@ -19,5 +19,4 @@ fake-useragent
 yt-dlp
 psycopg2-binary
 sqlalchemy
-pgvector
 numpy

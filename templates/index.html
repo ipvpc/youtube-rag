@@ -289,10 +289,10 @@
                         </div>
                         <div class="card-body">
                             <div class="row">
-                                <button class="btn" id="btnIngest" type="button">Run ingest (docs/txt → pgvector)</button>
+                                <button class="btn" id="btnIngest" type="button">Run ingest (docs/txt → remote LightRAG)</button>
                             </div>
                             <div class="hint">
-                                This runs the server’s ingestion script and inserts embeddings into PostgreSQL (skips duplicates).
+                                This runs the server’s ingestion script and sends transcripts to the remote LightRAG API (skips duplicates by file source when the server supports it).
                             </div>
                         </div>
                     </div>

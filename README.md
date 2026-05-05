@@ -1,388 +1,163 @@
-# YouTube RAG (Retrieval-Augmented Generation) System
+# YouTube RAG (Retrieval-Augmented Generation)
 
-A Flask-based web application that downloads YouTube videos, transcribes them to text, stores the transcriptions in a vector database, and provides a RAG (Retrieval-Augmented Generation) interface for querying the content using semantic search and LLM responses.
+Flask app that downloads YouTube audio, transcribes it via a Whisper-compatible HTTP API, chunks and embeds transcripts into PostgreSQL (pgvector), and answers questions with an Ollama-backed RAG flow. The default UI is a single-page experience: add a video, optionally ingest, then chat against embedded transcripts.
 
-## Overview
+## What it does
 
-This system enables users to:
-1. Download audio from YouTube videos
-2. Transcribe audio to text using a Whisper API
-3. Store transcriptions in a PostgreSQL database with vector embeddings
-4. Query the stored content using semantic search
-5. Generate AI-powered responses using Ollama LLM
+1. Download audio with **yt-dlp** and extract **MP3** (192 kbps).
+2. Send the MP3 to your **transcription API**; store **`.txt`** next to your configured text folder.
+3. **Ingest** (`inges.py`): load all `.txt` files under the text directory (`**/*.txt`), chunk with LangChain, embed via an OpenAI-compatible API, upsert into pgvector (skips rows whose chunk `content` already exists).
+4. **Query** (`query.py`): embed the user question, retrieve similar chunks (cosine distance below **0.7**), stream a completion from **Ollama**.
 
-## Architecture
+Only **`app.py`** needs to run as the server; `query.py` is imported as a library. Ingestion is normally triggered over HTTP (`/run-ingest` or bundled with `/download-transcribe`) which runs `inges.py` in a subprocess.
 
-The system consists of three main components:
-
-1. **Web Application (`app.py`)**: Main Flask server that handles YouTube downloads, transcription, and provides all API endpoints
-2. **Ingestion Pipeline (`inges.py`)**: Standalone script that processes text files and creates vector embeddings in PostgreSQL
-3. **Query Module (`query.py`)**: Python module that provides RAG functions (semantic search and response generation) imported by `app.py`
-
-**Note**: Only `app.py` needs to be running. `query.py` is imported as a module and doesn't run as a separate service.
-
-## Project Structure
+## Project layout
 
 ```
 youtube-rag/
-├── app.py                 # Main Flask application
-├── inges.py              # Document ingestion and embedding pipeline
-├── query.py              # RAG query and response generation
-├── config.py             # Configuration settings
-├── requirements.txt      # Python dependencies
-├── Dockerfile           # Docker container configuration
-├── build.sh             # Docker build and push script
-├── test.sh              # Docker test/run script
+├── app.py              # Flask app, download/transcribe, ingest trigger, query API
+├── inges.py            # Embedding pipeline (run standalone or via app)
+├── query.py            # Semantic search + Ollama RAG (imported by app)
+├── config.py           # Central defaults + env-based settings
+├── requirements.txt
+├── Dockerfile
+├── build.sh            # Build/push image (see script for registry/tag)
+├── test.sh             # Example docker run (adjust env and volumes)
 ├── templates/
-│   └── index.html       # Web UI for YouTube URL submission
-└── docs/
-    ├── mp3/             # Directory for downloaded audio files
-    └── txt/             # Directory for transcribed text files
+│   └── index.html      # UI: transcribe, ingest, chat + SSE progress
+└── LICENSE             # Apache-2.0
 ```
+
+At runtime, ensure **`DOWNLOAD_FOLDER`** and **`TEXT_FOLDER`** exist (the app creates them on startup). Docker copies a `docs/` tree into the image; bind-mount a host `docs` for persistence if you use containers.
 
 ## Configuration
 
-All configuration is managed through environment variables (with defaults in `config.py`):
+Environment variables override `config.py` defaults.
 
-### Environment Variables
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `COLLECTION_NAME` | `youtube_finance_docs` | Postgres table name for embedding rows |
+| `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Embedding model id for the OpenAI-compatible API |
+| `EMBEDDING_DIM` | `384` | Vector size; must match the model output and the pgvector column |
+| `OPENAI_API_KEY` | _(empty)_ | API key for the embedding server, if required |
+| `OPENAI_BASE` | `http://embeddings.alpha5.finance:8001/v1` | Base URL for embeddings (typically includes `/v1`) |
+| `MODEL` | `gemma2:27b` | Ollama model name for chat |
+| `OLLAMA_HOST` | `http://ollama.alpha5.finance:11434` | Ollama HTTP API host |
+| `DOWNLOAD_FOLDER` | `/app/docs/mp3` | MP3 output directory |
+| `TEXT_FOLDER` | `/app/docs/txt` | Transcript `.txt` directory |
+| `API_URL` | `http://whisper-api.alpha5.finance:5005/transcribe` | Whisper HTTP endpoint (`POST` multipart field `file`) |
+| `POSTGRES_CONNECTION_URI` | `postgresql://postgres@127.0.0.1:5432/youtube_rag` | Postgres connection string |
+| `PORT` | `5004` | Flask listen port |
+| `DEBUG` | `false` | Flask debug |
+| `LOG_LEVEL` | `DEBUG` if `DEBUG=true`, else `INFO` | Logging level |
+| `CORS_ORIGINS` | `*` | Comma-separated origins for `flask-cors` |
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `COLLECTION_NAME` | `youtube_finance_docs` | PostgreSQL table name for embeddings |
-| `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Embedding model name |
-| `EMBEDDING_DIM` | `384` | Embedding vector dimension (must match model output) |
-| `OPENAI_API_KEY` | _(empty)_ | API key for embedding service; set in your environment |
-| `OPENAI_BASE` | `http://embeddings.alpha5.finance:8001/v1` | Base URL for embedding API |
-| `MODEL` | `gemma2:27b` | Ollama LLM model name |
-| `OLLAMA_HOST` | `http://ollama.alpha5.finance:11434` | Ollama server URL |
-| `DOWNLOAD_FOLDER` | `/app/docs/mp3` | Directory for downloaded MP3 files |
-| `TEXT_FOLDER` | `/app/docs/txt` | Directory for transcribed text files |
-| `API_URL` | `http://whisper-api.alpha5.finance:5005/transcribe` | Whisper transcription API URL |
-| `PORT` | `5004` | Flask application port |
-| `DEBUG` | `false` | Enable Flask debug mode |
-| `POSTGRES_CONNECTION_URI` | `postgresql://postgres@127.0.0.1:5432/youtube_rag` | Full Postgres URL (set user/password via env for non-local) |
+**Postgres:** use a URI with credentials for non-local hosts, for example `postgresql://USER:PASSWORD@host:5432/youtube_rag`. The app and scripts expect the **pgvector** extension; `inges.py` / `query.py` run `CREATE EXTENSION IF NOT EXISTS vector` and ensure an `embedding vector(EMBEDDING_DIM)` column.
 
-### Database Configuration
+**Embedding dimension:** `EMBEDDING_DIM` must match the embedding model. If you change the model, update `EMBEDDING_DIM` and use a **new** `COLLECTION_NAME` or migrate the column type—`query.py` validates stored column dimension vs config.
 
-PostgreSQL connection string: set `POSTGRES_CONNECTION_URI`. The default in `config.py` points at local Postgres without a password in the URI; supply credentials via the variable for remote hosts, for example:
+## HTTP API
 
-```
-postgresql://USER:PASSWORD@host:5432/database_name
-```
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/` | Web UI (`templates/index.html`): transcribe, ingest, chat |
+| `POST` | `/` | Legacy form POST: same download+transcribe flow as JSON route, then redirect to `/success` |
+| `GET` | `/success` | Plain-text success after legacy form flow |
+| `GET` | `/health` | JSON `{"status":"healthy","service":"youtube-rag"}` |
+| `POST` | `/download-transcribe` | JSON body: `youtube_url`, optional `ingest` (bool), optional `task_id`. Returns paths, metadata, optional ingest subprocess result, and `task_id`. |
+| `GET` | `/progress/<task_id>` | **Server-Sent Events** stream of `{stage, percent, message, ...}` for long operations |
+| `POST` | `/run-ingest` | Optional JSON `{"task_id": "..."}`; runs `python inges.py`, returns stdout/stderr/returncode |
+| `POST` | `/query` | JSON `query`, optional `user_id`, optional `task_id`. Returns `response` and `task_id`. If no chunks pass the similarity threshold, returns a helpful message instead of an LLM answer. |
 
-## Components
+**Duplicate videos:** before download, the app resolves a stable `video_id` with yt-dlp and checks the **`youtube_videos`** table. Re-submitting the same video returns HTTP 400 with a duplicate error unless you clear that row.
 
-### 1. app.py - Web Application
+## Main code paths
 
-Main Flask application that provides:
-
-#### Endpoints
-
-- **`GET /`**: Web interface for submitting YouTube URLs
-- **`POST /`**: Processes YouTube URL, downloads audio, and transcribes
-- **`GET /success`**: Success page after transcription
-- **`GET /health`**: Health check endpoint
-- **`POST /run-ingest`**: Triggers the ingestion pipeline (`inges.py`)
-- **`POST /query`**: Query the RAG system
-
-#### Features
-
-- YouTube video download using `yt-dlp`
-- Audio extraction to MP3 format (192kbps)
-- Rate limiting with semaphore (max 3 concurrent downloads)
-- Random user-agent rotation to avoid detection
-- Automatic transcription via Whisper API
-- Text file storage in `docs/txt/` directory
-
-#### Key Functions
-
-- `download_youtube_audio()`: Downloads and converts YouTube video to MP3
-- `transcribe_audio()`: Sends audio file to Whisper API for transcription
-- `is_valid_youtube_url()`: Validates YouTube URLs
-
-### 2. inges.py - Ingestion Pipeline
-
-Processes text files and creates vector embeddings:
-
-#### Workflow
-
-1. **Load Documents**: Reads all `.txt` files from `/app/docs/txt/`
-2. **Split Text**: Chunks text using `RecursiveCharacterTextSplitter`:
-   - Chunk size: 2000 characters
-   - Chunk overlap: 20 characters
-3. **Generate Embeddings**: Creates embeddings using OpenAI-compatible API
-4. **Store in Database**: Saves embeddings to PostgreSQL with pgvector extension
-
-#### Database Schema
-
-```python
-class TextEmbedding:
-    id: Integer (primary key)
-    content: String (text chunk)
-    embedding: Vector(384) (pgvector)  # 384 dimensions for all-MiniLM-L6-v2
-    doc_metadata: JSON (document metadata)
-```
-
-**Note**: The embedding dimension (384) matches the `all-MiniLM-L6-v2` model. If you change the embedding model, you must update `N_DIM` in both `inges.py` and `query.py`.
-
-#### Key Functions
-
-- `split_text_into_chunks()`: Splits text into overlapping chunks
-- `generate_embeddings()`: Creates embeddings for text chunks
-- `insert_embeddings()`: Stores embeddings in PostgreSQL (skips duplicates)
-
-### 3. query.py - RAG Query Module
-
-Python module (not a standalone app) that provides semantic search and AI-powered response functions. This module is imported by `app.py` and provides the following functions:
-
-#### Workflow
-
-1. **Query Embedding**: Converts user query to embedding vector
-2. **Semantic Search**: Finds similar chunks using cosine distance in pgvector
-3. **Context Extraction**: Retrieves top-k similar chunks (default: 5)
-4. **RAG Response**: Generates response using Ollama LLM with retrieved context
-
-#### Key Functions (imported by `app.py`)
-
-- `Extract_context()`: Performs semantic search and retrieves relevant context
-- `find_similar_embeddings()`: PostgreSQL query using pgvector cosine distance
-- `generate_rag_response()`: Generates AI response using Ollama
-- `save_chat_history()`: Placeholder for chat history storage
-
-**Note**: This file does NOT run as a standalone Flask application. It's a module that provides functions to `app.py`.
-
-#### RAG Prompt Engineering
-
-The system uses a specialized prompt for hedge fund manager persona:
-- Focuses on maximizing profits
-- Analyzes financial data and market trends
-- Provides thorough explanations without summarizing
-- Relies solely on provided context
+- **`app.py`**: CORS, directories, `youtube_videos` ORM, progress store for SSE, `_download_transcribe_flow` (metadata → download → transcribe → register row), JSON and form routes, subprocess ingest.
+- **`inges.py`**: `DirectoryLoader` for `/app/docs/txt/**/*.txt`, `RecursiveCharacterTextSplitter` (2000 chars, 20 overlap), `OpenAI` client embeddings, `TextEmbedding` table named `COLLECTION_NAME`, duplicate skip by exact chunk string match.
+- **`query.py`**: Query embedding via same API/model as ingest, pgvector `<=>` with threshold **0.7**, top-**k** (default 5), Ollama streaming chat with a fixed “hedge fund manager” system prompt. `save_chat_history` is currently a no-op (logging only).
 
 ## Dependencies
 
-Key Python packages (see `requirements.txt`):
+See `requirements.txt` for pinned and unpinned packages. Notable: **Flask**, **flask-cors**, **yt-dlp**, **moviepy**, **langchain**-community/text-splitters/openai, **openai**, **sqlalchemy**, **pgvector**, **psycopg2-binary**, **requests**, **fake-useragent**. Chat uses the **`ollama`** Python client (`from ollama import Client`); ensure it is installed (directly or as a transitive dependency of your environment).
 
-- **Flask**: Web framework
-- **yt-dlp**: YouTube video downloader
-- **moviepy**: Video/audio processing
-- **langchain**: Document processing and text splitting
-- **openai**: Embedding generation
-- **sqlalchemy**: Database ORM
-- **pgvector**: PostgreSQL vector extension support
-- **ollama**: LLM client
-- **numpy**: Numerical operations
+## Local run
 
-## Setup and Installation
-
-### Local Development
-
-1. **Install dependencies**:
 ```bash
 pip install -r requirements.txt
-```
-
-2. **Set environment variables** (or modify `config.py`):
-```bash
-export OPENAI_API_KEY=your_key
-export OPENAI_BASE=http://your-embedding-service/v1
-export OLLAMA_HOST=http://your-ollama-host:11434
-```
-
-3. **Create directories**:
-```bash
 mkdir -p docs/mp3 docs/txt
-```
-
-4. **Run the application**:
-```bash
+export POSTGRES_CONNECTION_URI="postgresql://..."
+export OPENAI_BASE="http://your-embeddings:8001/v1"
+export API_URL="http://your-whisper:5005/transcribe"
+export OLLAMA_HOST="http://localhost:11434"
 python app.py
 ```
 
-The application will start on `http://localhost:5004`
+Open `http://localhost:5004` (or your `PORT`).
 
-### Docker Deployment
+## Docker
 
-#### Build Image
+`build.sh` and `test.sh` in this repo target **`registry.alpha5.finance/trade-system/youtube-rag:latest`**—adjust registry/tag for your environment.
+
+Build (or run the commands inside `build.sh`):
 
 ```bash
-./build.sh
+docker build -t registry.alpha5.finance/trade-system/youtube-rag:latest .
 ```
 
-Or manually:
-```bash
-docker build -t registry.alpha5.finance/rags/youtube-qa-agent:prod .
-docker push registry.alpha5.finance/rags/youtube-qa-agent:prod
-```
-
-#### Run Container
+Example run (from `test.sh`; add `-e POSTGRES_CONNECTION_URI=...` pointing at a reachable Postgres with pgvector):
 
 ```bash
-./test.sh
-```
-
-Or manually:
-```bash
-docker run --rm -it --name youtube-qa-agent \
+docker run --rm -it --name youtube-rag \
   -p 5014:5004 \
-  -e OPENAI_API_KEY="$OPENAI_API_KEY" \
+  -e OPENAI_API_KEY="${OPENAI_API_KEY}" \
   -e OPENAI_BASE=http://embeddings.alpha5.finance:8001/v1 \
   -e API_URL=http://whisper-api.alpha5.finance:5005/transcribe \
-  -e EMBEDDING_MODEL=all-MiniLM-L6-v2 \
+  -e EMBEDDING_MODEL=BAAI/bge-small-en-v1.5 \
+  -e EMBEDDING_DIM=384 \
   -e COLLECTION_NAME=youtube_docs \
-  -e MODEL=gemma2:27b \
+  -e MODEL=deepseek-r1:1.5b \
   -e OLLAMA_HOST=http://ollama.alpha5.finance:11434 \
+  -e TZ=America/New_York \
   -v /data/ai-docs/youtube-rag/docs:/app/docs \
-  registry.alpha5.finance/rags/youtube-qa-agent:prod
+  registry.alpha5.finance/trade-system/youtube-rag:latest
 ```
 
-## Usage
+The image **`CMD`** is `python app.py` on port **5004** inside the container.
 
-### 1. Download and Transcribe YouTube Video
+## Example `curl` calls
 
-**Web Interface**:
-- Navigate to `http://localhost:5004`
-- Enter YouTube URL
-- Click "Download and Transcribe"
-- Audio is downloaded to `docs/mp3/`
-- Transcription is saved to `docs/txt/`
+**Download + transcribe (JSON):**
 
-**API**:
 ```bash
-curl -X POST http://localhost:5004/ \
-  -d "youtube_url=https://www.youtube.com/watch?v=VIDEO_ID"
-```
-
-### 2. Ingest Documents into Vector Database
-
-**API**:
-```bash
-curl -X POST http://localhost:5004/run-ingest
-```
-
-This processes all `.txt` files in `docs/txt/` and creates embeddings.
-
-### 3. Query the RAG System
-
-**API**:
-```bash
-curl -X POST http://localhost:5004/query \
+curl -sS -X POST http://localhost:5004/download-transcribe \
   -H "Content-Type: application/json" \
-  -d '{
-    "query": "What are the main investment strategies discussed?",
-    "user_id": "user123"
-  }'
+  -d '{"youtube_url":"https://www.youtube.com/watch?v=VIDEO_ID","ingest":false,"task_id":"my-task-1"}'
 ```
 
-**Response**:
-```json
-{
-  "response": "Based on the context, the main investment strategies include..."
-}
-```
+**Ingest all transcripts:**
 
-## API Reference
-
-### POST /query
-
-Query the RAG system with a natural language question.
-
-**Request Body**:
-```json
-{
-  "query": "Your question here",
-  "user_id": "optional_user_id"
-}
-```
-
-**Response**:
-```json
-{
-  "response": "AI-generated response based on retrieved context"
-}
-```
-
-### POST /run-ingest
-
-Trigger the ingestion pipeline to process all text files.
-
-**Response**:
-```json
-{
-  "stdout": "Script output",
-  "stderr": "Error output",
-  "returncode": 0
-}
-```
-
-### GET /health
-
-Health check endpoint.
-
-**Response**:
-```json
-{
-  "status": "healthy",
-  "service": "youtube-rag"
-}
-```
-
-## Database Setup
-
-The system requires PostgreSQL with the pgvector extension. The application automatically creates the extension if it doesn't exist, but you can also create it manually:
-
-```sql
-CREATE EXTENSION IF NOT EXISTS vector;
-```
-
-The `inges.py` and `query.py` scripts automatically:
-1. Create the pgvector extension if missing
-2. Create the table if it doesn't exist
-
-**Important**: Ensure your PostgreSQL server has the pgvector extension installed. On Ubuntu/Debian:
 ```bash
-sudo apt-get install postgresql-14-pgvector  # Adjust version as needed
+curl -sS -X POST http://localhost:5004/run-ingest \
+  -H "Content-Type: application/json" \
+  -d '{}'
 ```
 
-## Limitations and Notes
+**Query:**
 
-1. **Rate Limiting**: Maximum 3 concurrent downloads (configurable via semaphore)
-2. **Duplicate Prevention**: Ingestion skips chunks that already exist in database
-3. **Embedding Dimensions**: Fixed at 384 dimensions for `all-MiniLM-L6-v2` model (must match embedding model output)
-4. **Similarity Threshold**: Cosine distance threshold of 0.7 for semantic search
-5. **Chunk Size**: Text is split into 2000-character chunks with 20-character overlap
-6. **pgvector Extension**: The application automatically creates the `vector` extension in PostgreSQL if it doesn't exist
-
-## Troubleshooting
-
-### Common Issues
-
-1. **FFmpeg not found**: Install FFmpeg system package
-2. **Database connection errors**: Verify PostgreSQL connection string and pgvector extension
-3. **Embedding API errors**: Check `OPENAI_BASE` and `OPENAI_API_KEY` environment variables
-4. **Ollama connection errors**: Verify `OLLAMA_HOST` and ensure model is available
-
-### Logging
-
-The application uses Python's logging module. Set log level via:
-```python
-logging.basicConfig(level=logging.DEBUG)
+```bash
+curl -sS -X POST http://localhost:5004/query \
+  -H "Content-Type: application/json" \
+  -d '{"query":"What themes are discussed?","user_id":"user123"}'
 ```
 
-## Future Enhancements
+## Operational notes
 
-- [ ] Chat history persistence
-- [ ] User authentication
-- [ ] Batch processing for multiple videos
-- [ ] Support for other video platforms
-- [ ] WebSocket support for real-time transcription
-- [ ] Advanced filtering and search options
-- [ ] Export functionality for transcriptions
+- **Concurrency:** at most **3** simultaneous yt-dlp downloads (semaphore), plus a random **1–3 s** delay per download.
+- **FFmpeg:** required on the host or in the image for audio extraction (Dockerfile installs `ffmpeg`).
+- **Similarity:** chunks with cosine distance **≥ 0.7** are excluded from RAG context.
+- **Logging:** set `LOG_LEVEL` (e.g. `DEBUG`) for verbose logs.
 
 ## License
 
-[Add license information here]
-
-## Contributing
-
-[Add contributing guidelines here]
+This project is licensed under the **Apache License 2.0**; see [LICENSE](LICENSE).

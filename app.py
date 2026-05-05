@@ -7,7 +7,7 @@ import moviepy.editor as mp
 import os
 import requests
 import logging
-from query import Extract_context, generate_rag_response, save_chat_history  # Import functions from query.py
+from query import run_rag_query, save_chat_history
 import subprocess
 from fake_useragent import UserAgent
 import yt_dlp
@@ -341,19 +341,17 @@ def run_query():
         logger.debug("Query text: %s", query)
 
         if task_id:
-            _set_progress(task_id, "searching", 20, "Searching embeddings...")
-        # Extract the context and generate a response
-        content = Extract_context(query)
-        if not content or not content.strip():
-            if task_id:
-                _set_progress(task_id, "error", 0, "No relevant context found")
-            return jsonify({
-                "response": "No relevant context found. Make sure you ran ingest for your transcripts, then try again.",
-                "task_id": task_id
-            })
+            _set_progress(task_id, "searching", 20, "Querying remote LightRAG...")
         if task_id:
             _set_progress(task_id, "generating", 60, "Generating response...")
-        response = generate_rag_response(content, query)
+        response = run_rag_query(query or "")
+        if not response or not str(response).strip():
+            if task_id:
+                _set_progress(task_id, "error", 0, "No answer produced")
+            return jsonify({
+                "response": "No answer produced. Run ingest on your transcripts (remote LightRAG), then try again.",
+                "task_id": task_id
+            })
 
         if task_id:
             _set_progress(task_id, "complete", 100, "Response generated")

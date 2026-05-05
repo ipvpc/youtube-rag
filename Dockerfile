@@ -15,8 +15,6 @@ COPY *.py /app/
 COPY docs/ /app/docs/
 COPY templates/ /app/templates/
 
-RUN pip install sqlalchemy pgvector
-
 EXPOSE 5004
 
 CMD ["python", "app.py"]

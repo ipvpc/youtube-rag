@@ -8,8 +8,7 @@ COLLECTION_NAME = os.getenv("COLLECTION_NAME", "youtube_finance_docs")
 # Default to a model that the Alpha5 embeddings service exposes.
 # (Your error shows available models include 'BAAI/bge-small-en-v1.5'.)
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
-# IMPORTANT: pgvector columns are created with a fixed dimension.
-# Keep this aligned with the embedding model output dimension.
+# Embedding model dimension (for other services / legacy tooling if needed).
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "384"))
 # Set via environment; use empty string if your embedding server does not require auth.
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -25,3 +24,13 @@ POSTGRES_CONNECTION_URI = os.getenv(
     "POSTGRES_CONNECTION_URI",
     "postgresql://postgres@127.0.0.1:5432/youtube_rag",
 )
+
+# Remote LightRAG HTTP API (lightrag_server / FastAPI)
+LIGHTRAG_SERVICE_URL = os.getenv("LIGHTRAG_SERVICE_URL", "http://127.0.0.1:9621").strip().rstrip("/")
+LIGHTRAG_API_KEY = os.getenv("LIGHTRAG_API_KEY", "").strip()
+LIGHTRAG_BEARER_TOKEN = os.getenv("LIGHTRAG_BEARER_TOKEN", "").strip()
+LIGHTRAG_REQUEST_TIMEOUT = float(os.getenv("LIGHTRAG_REQUEST_TIMEOUT", "300"))
+# Query modes: naive, local, global, hybrid, mix, bypass (see LightRAG QueryRequest)
+LIGHTRAG_QUERY_MODE = os.getenv("LIGHTRAG_QUERY_MODE", "hybrid").strip().lower()
+# Optional: forwarded as `user_prompt` on POST /query (remote prompt tuning)
+LIGHTRAG_USER_PROMPT = os.getenv("LIGHTRAG_USER_PROMPT", "").strip()
