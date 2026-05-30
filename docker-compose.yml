@@ -1,3 +1,4 @@
+# trade-system
 # Stack: Postgres (app metadata) + LightRAG API + youtube-rag Flask UI
 #
 # LightRAG uses OpenAI-compatible HTTP APIs for BOTH chat (LLM) and embeddings.
@@ -12,60 +13,16 @@
 #   open http://localhost:5004
 
 services:
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      POSTGRES_DB: ${POSTGRES_DB:-youtube_rag}
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    expose:
-      - "5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  lightrag:
-    build:
-      context: .
-      dockerfile: Dockerfile.lightrag
-    environment:
-      HOST: "0.0.0.0"
-      PORT: "9621"
-      WORKING_DIR: /app/rag_storage
-      INPUT_DIR: /app/inputs
-      LLM_BINDING: openai
-      LLM_BINDING_HOST: ${OPENAI_LLM_BASE:-${OPENAI_COMPAT_BASE:?set OPENAI_COMPAT_BASE or OPENAI_LLM_BASE in .env}}
-      LLM_BINDING_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY in .env}
-      LLM_MODEL: ${LIGHTRAG_LLM_MODEL:-${LLM_MODEL:-gpt-4o-mini}}
-      EMBEDDING_BINDING: openai
-      EMBEDDING_BINDING_HOST: ${OPENAI_EMBEDDING_BASE:-${OPENAI_COMPAT_BASE}}
-      EMBEDDING_BINDING_API_KEY: ${OPENAI_EMBEDDING_API_KEY:-${OPENAI_API_KEY}}
-      EMBEDDING_MODEL: ${LIGHTRAG_EMBEDDING_MODEL:-text-embedding-3-small}
-      EMBEDDING_DIM: ${LIGHTRAG_EMBEDDING_DIM:-1536}
-      LIGHTRAG_API_KEY: ${LIGHTRAG_API_KEY:-}
-    volumes:
-      - lightrag_data:/app/rag_storage
-    ports:
-      - "9621:9621"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:9621/health >/dev/null || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 8
-      start_period: 180s
 
   youtube-rag:
     build:
       context: .
       dockerfile: Dockerfile
+    image: registry.alpha5.finance/trade-system/youtube-rag:latest
     environment:
       PORT: "5004"
-      POSTGRES_CONNECTION_URI: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-youtube_rag}
-      LIGHTRAG_SERVICE_URL: http://lightrag:9621
+      POSTGRES_CONNECTION_URI: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres.alpha5.finance:5432/${POSTGRES_DB:-youtube_rag}
+      LIGHTRAG_SERVICE_URL: http://lightrag.alpha5.finance:9621
       LIGHTRAG_API_KEY: ${LIGHTRAG_API_KEY:-}
       LIGHTRAG_QUERY_MODE: ${LIGHTRAG_QUERY_MODE:-hybrid}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -76,14 +33,9 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ./docs:/app/docs
+      - /data/AI-Docs/youtube/finance/:/app/docs
     ports:
       - "5004:5004"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      lightrag:
-        condition: service_healthy
 
 volumes:
   pgdata:
