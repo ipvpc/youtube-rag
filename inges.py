@@ -7,8 +7,8 @@ import json
 import logging
 import os
 
+import chardet
 import config
-from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from lightrag_remote import format_ingest_result, ingest_transcripts_batch
 
 os.environ["USER_AGENT"] = "alpha-agent"
@@ -21,28 +21,42 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-documents = []
 text_dir = config.TEXT_FOLDER
-glob_pattern = "**/*.txt"
 
-if os.path.exists(text_dir):
-    if any(
-        filename.endswith(".txt")
-        for _, _, filenames in os.walk(text_dir)
-        for filename in filenames
-    ):
-        loader = DirectoryLoader(
-            text_dir,
-            glob=glob_pattern,
-            loader_cls=TextLoader,
-            loader_kwargs={"autodetect_encoding": True},
-        )
-        documents.extend(loader.load())
-else:
-    logging.warning("Skipping non-existent directory: %s", text_dir)
+
+def _read_text_file(path: str) -> str | None:
+    with open(path, "rb") as handle:
+        raw = handle.read()
+    if not raw.strip():
+        return None
+    detected = chardet.detect(raw)
+    encoding = (detected or {}).get("encoding") or "utf-8"
+    try:
+        return raw.decode(encoding)
+    except (UnicodeDecodeError, LookupError):
+        return raw.decode("utf-8", errors="replace")
+
+
+def load_transcript_files(root_dir: str) -> list[tuple[str, str]]:
+    """Return (absolute_path, content) for each non-empty .txt under root_dir."""
+    documents: list[tuple[str, str]] = []
+    if not os.path.exists(root_dir):
+        logging.warning("Skipping non-existent directory: %s", root_dir)
+        return documents
+
+    for dirpath, _, filenames in os.walk(root_dir):
+        for filename in filenames:
+            if not filename.endswith(".txt"):
+                continue
+            path = os.path.join(dirpath, filename)
+            content = _read_text_file(path)
+            if content and content.strip():
+                documents.append((path, content))
+    return documents
 
 
 def main() -> None:
+    documents = load_transcript_files(text_dir)
     if not documents:
         log.info("No text content found. Ensure .txt files exist under %s", text_dir)
         print(format_ingest_result({"status": "skipped", "message": "no documents", "track_id": ""}))
@@ -51,15 +65,12 @@ def main() -> None:
     texts: list[str] = []
     file_sources: list[str] = []
 
-    for doc in documents:
-        if not doc.page_content or not doc.page_content.strip():
-            continue
-        src = (doc.metadata or {}).get("source") or ""
+    for src, page_content in documents:
         base = os.path.basename(src)
         video_id, _ext = os.path.splitext(base)
         if not video_id:
             video_id = "unknown"
-        texts.append(doc.page_content)
+        texts.append(page_content)
         # Stable source id for dedupe on the LightRAG server
         file_sources.append(f"youtube-{video_id}.txt")
 

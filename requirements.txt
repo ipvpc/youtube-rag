@@ -2,15 +2,9 @@ flask
 flask-cors
 fastapi
 pydantic
-langchain-community
 redis
-langchain
-langchain-ollama
-langchain-text-splitters
 tzdata
 chardet
-openai
-langchain-openai
 gunicorn
 #pytubefix
 moviepy==1.0.3

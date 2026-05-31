@@ -362,6 +362,17 @@ def run_query():
         save_chat_history(user_id, query, response)
 
         return jsonify({"response": response, "task_id": task_id})
+    except requests.exceptions.Timeout as e:
+        if 'task_id' in locals():
+            _set_progress(task_id, "error", 0, "LightRAG query timed out")
+        logger.error("POST /query timed out: %s", e)
+        return jsonify({
+            "error": (
+                "LightRAG query timed out. Increase LIGHTRAG_QUERY_TIMEOUT in .env, "
+                "or try a faster mode (e.g. LIGHTRAG_QUERY_MODE=naive or local)."
+            ),
+            "task_id": task_id if 'task_id' in locals() else None,
+        }), 504
     except Exception as e:
         if 'task_id' in locals():
             _set_progress(task_id, "error", 0, str(e))

@@ -64,7 +64,10 @@ Copy **`.env.example`** to **`.env`** and set secrets. Docker Compose reads **`.
 | `LIGHTRAG_SERVICE_URL` | `http://127.0.0.1:9621` | LightRAG API base (no trailing slash) |
 | `LIGHTRAG_API_KEY` | _(empty)_ | `X-API-Key` when the server requires it |
 | `LIGHTRAG_BEARER_TOKEN` | _(empty)_ | `Authorization: Bearer …` when using JWT-style auth |
-| `LIGHTRAG_REQUEST_TIMEOUT` | `300` | HTTP timeout (seconds) |
+| `LIGHTRAG_CONNECT_TIMEOUT` | `30` | TCP connect timeout (seconds) |
+| `LIGHTRAG_QUERY_TIMEOUT` | `900` | Read timeout for **`POST /query`** |
+| `LIGHTRAG_INGEST_TIMEOUT` | `600` | Read timeout for **`POST /documents/texts`** |
+| `LIGHTRAG_REQUEST_TIMEOUT` | `300` | Legacy: used only if query/ingest timeouts are unset |
 | `LIGHTRAG_QUERY_MODE` | `hybrid` | Passed as `mode` on **`POST /query`** |
 | `LIGHTRAG_USER_PROMPT` | _(empty)_ | If set, sent as `user_prompt` on **`POST /query`** |
 
@@ -168,10 +171,11 @@ curl -sS -X POST http://localhost:5004/query \
 - **FFmpeg** required (installed in `Dockerfile`).
 - **`save_chat_history`** is a stub (logging only); chat persistence in the UI is **localStorage**.
 - LightRAG’s **`/query`** API requires query length **≥ 3** characters; the client pads very short strings minimally.
+- **`hybrid`** / **`global`** queries on a large graph can run many minutes; raise **`LIGHTRAG_QUERY_TIMEOUT`** or use **`LIGHTRAG_QUERY_MODE=naive`** / **`local`** for faster (less thorough) answers.
 
 ## Dependencies
 
-See **`requirements.txt`**: Flask, flask-cors, yt-dlp, moviepy, langchain-community (loaders), sqlalchemy, psycopg2-binary, requests, openai, etc. The **LightRAG server** image installs **`lightrag-hku`** separately (`Dockerfile.lightrag`).
+See **`requirements.txt`**: Flask, flask-cors, yt-dlp, moviepy, chardet, sqlalchemy, psycopg2-binary, requests, openai, etc. The **LightRAG server** image installs **`lightrag-hku`** separately (`Dockerfile.lightrag`).
 
 ## License
 

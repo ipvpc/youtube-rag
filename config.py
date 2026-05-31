@@ -29,7 +29,12 @@ POSTGRES_CONNECTION_URI = os.getenv(
 LIGHTRAG_SERVICE_URL = os.getenv("LIGHTRAG_SERVICE_URL", "http://127.0.0.1:9621").strip().rstrip("/")
 LIGHTRAG_API_KEY = os.getenv("LIGHTRAG_API_KEY", "").strip()
 LIGHTRAG_BEARER_TOKEN = os.getenv("LIGHTRAG_BEARER_TOKEN", "").strip()
+# Deprecated: set LIGHTRAG_QUERY_TIMEOUT / LIGHTRAG_INGEST_TIMEOUT instead.
 LIGHTRAG_REQUEST_TIMEOUT = float(os.getenv("LIGHTRAG_REQUEST_TIMEOUT", "300"))
+LIGHTRAG_CONNECT_TIMEOUT = float(os.getenv("LIGHTRAG_CONNECT_TIMEOUT", "30"))
+# Hybrid/global LightRAG queries often exceed 300s on large knowledge bases.
+LIGHTRAG_QUERY_TIMEOUT = float(os.getenv("LIGHTRAG_QUERY_TIMEOUT", "900"))
+LIGHTRAG_INGEST_TIMEOUT = float(os.getenv("LIGHTRAG_INGEST_TIMEOUT", "600"))
 # Query modes: naive, local, global, hybrid, mix, bypass (see LightRAG QueryRequest)
 LIGHTRAG_QUERY_MODE = os.getenv("LIGHTRAG_QUERY_MODE", "hybrid").strip().lower()
 # Optional: forwarded as `user_prompt` on POST /query (remote prompt tuning)

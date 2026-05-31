@@ -41,8 +41,19 @@ def _headers() -> dict[str, str]:
     return h
 
 
-def _timeout() -> float:
-    return float(getattr(config, "LIGHTRAG_REQUEST_TIMEOUT", 300))
+def _connect_timeout() -> float:
+    return float(getattr(config, "LIGHTRAG_CONNECT_TIMEOUT", 30))
+
+
+def _query_timeout() -> tuple[float, float]:
+    """(connect_seconds, read_seconds) for POST /query."""
+    read = float(getattr(config, "LIGHTRAG_QUERY_TIMEOUT", 900))
+    return (_connect_timeout(), read)
+
+
+def _ingest_timeout() -> tuple[float, float]:
+    read = float(getattr(config, "LIGHTRAG_INGEST_TIMEOUT", 600))
+    return (_connect_timeout(), read)
 
 
 def _ensure_query_min_length(query: str) -> str:
@@ -66,8 +77,9 @@ def remote_query(user_query: str) -> str:
     if up:
         body["user_prompt"] = up
 
-    logger.debug("POST %s mode=%s", url, body.get("mode"))
-    resp = requests.post(url, json=body, headers=_headers(), timeout=_timeout())
+    connect_s, read_s = _query_timeout()
+    logger.info("POST %s mode=%s (connect=%ss read=%ss)", url, body.get("mode"), connect_s, read_s)
+    resp = requests.post(url, json=body, headers=_headers(), timeout=(connect_s, read_s))
     try:
         resp.raise_for_status()
     except requests.HTTPError:
@@ -90,8 +102,9 @@ def remote_insert_texts(texts: list[str], file_sources: Optional[list[str]]) -> 
     if file_sources is not None:
         payload["file_sources"] = file_sources
 
-    logger.info("POST %s (batch size=%s)", url, len(texts))
-    resp = requests.post(url, json=payload, headers=_headers(), timeout=_timeout())
+    connect_s, read_s = _ingest_timeout()
+    logger.info("POST %s (batch size=%s, read_timeout=%ss)", url, len(texts), read_s)
+    resp = requests.post(url, json=payload, headers=_headers(), timeout=(connect_s, read_s))
     try:
         resp.raise_for_status()
     except requests.HTTPError:
